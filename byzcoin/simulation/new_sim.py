@@ -36,7 +36,7 @@ batch = list(set(df['batch']))
 for delay in delays:
     for k in keep:
         for b in batch:
-            titlestring = 'Ground Truth localhost 5 hosts'
+            titlestring = 'Credit'
             # No whitespace, colons or commata in filenames
             namestring = titlestring.replace(' ','').replace(':','-').replace(',','_')
             data = df.loc[df['delay'] == delay].sort_values('hosts')
@@ -45,9 +45,9 @@ for delay in delays:
             data = data.reset_index()
 
 
-            ax = data.plot.bar(
-                    y=['prepare_wall_sum','send_wall_sum','sst_user_sum','confirm_wall_avg'],\
 
+            ax = data.plot.bar(
+                    y=['prepare_wall_sum','send_wall_sum','confirm_wall_avg', 'credit_wall_avg'],\
                     stacked=True,
                     )
 
@@ -69,7 +69,7 @@ for delay in delays:
 
 
             ax = data.plot.bar(
-                    y=['prepare_wall_sum','send_wall_sum','confirm_wall_avg'],\
+                    y=['prepare_wall_sum','send_wall_sum','confirm_wall_avg', 'credit_wall_avg'],\
                     stacked=True)
             data.plot(y='round_wall_avg', marker='o', ax=ax)
             ax.set_yscale('log')
