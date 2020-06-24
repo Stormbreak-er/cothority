@@ -23,9 +23,6 @@ type rollupTxResult struct {
 // txProcessor is the interface that must be implemented. It is used in the
 // stateful pipeline txPipeline that takes transactions and creates blocks.
 type txProcessor interface {
-	// RollupTx implements a blocking function that returns transactions
-	// that should go into new blocks. These transactions are not verified.
-	RollupTx() (*rollupTxResult, error)
 	// ProcessTx attempts to apply the given tx to the input state and then
 	// produce new state(s). If the new tx is too big to fit inside a new
 	// state, the function will return more states. Where the older states
@@ -104,76 +101,6 @@ type defaultTxProcessor struct {
 	scID        skipchain.SkipBlockID
 	latest      *skipchain.SkipBlock
 	sync.Mutex
-}
-
-func (s *defaultTxProcessor) RollupTx() (*rollupTxResult, error) {
-	// Need to update the config, as in the meantime a new block should have
-	// arrived with a possible new configuration.
-	bcConfig, err := s.LoadConfig(s.scID)
-	if err != nil {
-		log.Error(s.ServerIdentity(), "couldn't get configuration - this is bad and probably "+
-			"a problem with the database! ", err)
-		return nil, xerrors.Errorf("reading config: %v", err)
-	}
-
-	latest, err := s.db().GetLatestByID(s.scID)
-	if err != nil {
-		log.Errorf("Error while searching for %x", s.scID[:])
-		log.Error("DB is in bad state and cannot find skipchain anymore."+
-			" This function should never be called on a skipchain that does not exist.", err)
-		return nil, xerrors.Errorf("reading latest: %v", err)
-	}
-
-	// Keep track of the latest block for the processing
-	s.Lock()
-	s.latest = latest
-	s.Unlock()
-
-	log.Lvlf3("%s: Starting new block %d (%x) for chain %x", s.ServerIdentity(), latest.Index+1, latest.Hash, s.scID)
-	tree := bcConfig.Roster.GenerateNaryTree(len(bcConfig.Roster.List))
-	proto, err := s.CreateProtocol(rollupTxProtocol, tree)
-	if err != nil {
-		log.Error(s.ServerIdentity(), "Protocol creation failed with error."+
-			" This panic indicates that there is most likely a programmer error,"+
-			" e.g., the protocol does not exist."+
-			" Hence, we cannot recover from this failure without putting"+
-			" the server in a strange state, so we panic.", err)
-		return nil, xerrors.Errorf("creating protocol: %v", err)
-	}
-	root := proto.(*RollupTxProtocol)
-	root.SkipchainID = s.scID
-	root.LatestID = latest.Hash
-
-	// When we poll, the child nodes must reply within half of the block
-	// interval, because we'll use the other half to process the
-	// transactions.
-	protocolTimeout := time.After(bcConfig.BlockInterval / 2)
-
-	var txs []ClientTransaction
-	commonVersion := Version(0)
-
-rollupTxLoop:
-	for {
-		select {
-		case commonVersion = <-root.CommonVersionChan:
-			// The value gives a version that is the same for a threshold of conodes but it
-			// can be the latest version available so it needs to check that to not create a
-			// block to upgrade from version x to x (which is not an upgrade per se).
-		case newTxs, _ := <-root.CtxChan:
-			txs = append(txs, newTxs)
-			break rollupTxLoop
-		case <-protocolTimeout:
-			log.Lvl2(s.ServerIdentity(), "timeout while collecting transactions from other nodes")
-			close(root.Finish)
-			break rollupTxLoop
-		case <-s.stopCollect:
-			log.Lvl2(s.ServerIdentity(), "abort collection of transactions")
-			close(root.Finish)
-			break rollupTxLoop
-		}
-	}
-
-	return &rollupTxResult{Txs: txs, CommonVersion: commonVersion}, nil
 }
 
 func (s *defaultTxProcessor) ProcessTx(tx ClientTransaction, inState *txProcessorState) ([]*txProcessorState, error) {

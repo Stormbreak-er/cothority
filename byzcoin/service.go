@@ -128,7 +128,7 @@ type Service struct {
 	pollChanWG  sync.WaitGroup
 
 	txPipelinesMutex sync.Mutex
-	txPipeline map[string]*txPipeline
+	txPipeline       map[string]*txPipeline
 
 	// contracts map kinds to kind specific verification functions
 	contracts *contractRegistry
@@ -441,7 +441,7 @@ func (s *Service) AddTransaction(req *AddTxRequest) (*AddTxResponse, error) {
 	if s.ServerIdentity().Equal(leader) {
 		s.txPipelinesMutex.Lock()
 		txp, ok := s.txPipeline[string(req.SkipchainID)]
-		if !ok{
+		if !ok {
 			s.txPipelinesMutex.Unlock()
 			return nil, errors.New("this pipeline is not available")
 		}
@@ -451,42 +451,10 @@ func (s *Service) AddTransaction(req *AddTxRequest) (*AddTxResponse, error) {
 		}
 		s.txPipelinesMutex.Unlock()
 	} else {
-		latest, err := s.db().GetLatestByID(req.SkipchainID)
+		leaderRoster := onet.NewRoster([]*network.ServerIdentity{leader})
+		_, err := NewClient(req.SkipchainID, *leaderRoster).
+			AddTransaction(req.Transaction)
 		if err != nil {
-			log.Errorf("Error while searching for %x", req.SkipchainID[:])
-			log.Error("DB is in bad state and cannot find skipchain anymore."+
-				" This function should never be called on a skipchain that does not exist.", err)
-			return nil, xerrors.Errorf("reading latest: %v", err)
-		}
-
-		//create new roster with self and leader
-		list := []*network.ServerIdentity{s.ServerIdentity(), leader}
-		newRost := onet.NewRoster(list)
-		tree := newRost.GenerateNaryTree(len(newRost.List))
-
-		proto, err := s.CreateProtocol(rollupTxProtocol, tree)
-		if err != nil {
-			log.Error(s.ServerIdentity(), "Protocol creation failed with error."+
-				" This panic indicates that there is most likely a programmer error,"+
-				" e.g., the protocol does not exist."+
-				" Hence, we cannot recover from this failure without putting"+
-				" the server in a strange state, so we panic.", err)
-			return nil, xerrors.Errorf("creating protocol: %v", err)
-		}
-
-		root := proto.(*RollupTxProtocol)
-		root.SkipchainID = req.SkipchainID
-		root.LatestID = latest.Hash
-		root.NewTx = req
-		err = root.SetConfig(&onet.GenericConfig{Data: req.SkipchainID})
-		if err != nil{
-			return nil, fmt.Errorf("couldn't set config: %v", err)
-		}
-		err = proto.Start()
-		if err != nil {
-			return nil, fmt.Errorf("couldn't start protocol: %v", err)
-		}
-		if err := <-root.DoneChan; err != nil {
 			log.Lvlf2("root failed with %v - need to request a view-change",
 				err)
 			var err error
@@ -1058,29 +1026,6 @@ func (s *Service) SetPropagationTimeout(p time.Duration) {
 	s.storage.Unlock()
 	s.save()
 	s.skService().SetPropTimeout(p)
-}
-
-// NewProtocol is called by onet whenever a new protocol arrives.
-// Here we use it to pass our s.txPipeline.ctxChan to the RollupTxProtocol.
-func (s *Service) NewProtocol(ti *onet.TreeNodeInstance, conf *onet.GenericConfig) (pi onet.ProtocolInstance, err error) {
-	// This is the byzcoin leader receiving a new ClientTransaction from a node.
-	if ti.ProtocolName() == rollupTxProtocol {
-		pi, err = NewRollupTxProtocol(ti)
-		if err != nil {
-			return
-		}
-
-		rtx := pi.(*RollupTxProtocol)
-		s.txPipelinesMutex.Lock()
-		txp, ok := s.txPipeline[string(conf.Data)]
-		if !ok{
-			s.txPipelinesMutex.Unlock()
-			return nil, errors.New("don't have this pipeline")
-		}
-		rtx.CtxChan = txp.ctxChan
-		s.txPipelinesMutex.Unlock()
-	}
-	return
 }
 
 // createNewBlock creates a new block and proposes it to the
