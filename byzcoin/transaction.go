@@ -713,5 +713,3 @@ func (sc StateAction) String() string {
 		return "Invalid stateChange"
 	}
 }
-
-const defaultMaxBufferSize = 1000

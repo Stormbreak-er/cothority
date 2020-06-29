@@ -288,58 +288,51 @@ func TestViewChange_LostSync(t *testing.T) {
 // Test to make sure the view change triggers a proof propagation when a conode
 // is sending request for old blocks, meaning it is out-of-sync and as the leader
 // is offline, it will never catch up.
+//  - Node0 - leader - stopped after creation of block #1
+//  - Node3 - misses block #1, unpaused after creation of block #1
 func TestViewChange_NeedCatchUp(t *testing.T) {
 	rw := time.Duration(3)
-	s := newSerN(t, 1, testInterval, 5, rw)
+	nodes := 4
+	s := newSerN(t, 1, testInterval, nodes, rw)
 	defer s.local.CloseAll()
 
 	for _, service := range s.services {
 		service.SetPropagationTimeout(2 * testInterval)
 	}
 
-	s.hosts[3].Pause()
+	s.hosts[nodes-1].Pause()
 
 	// Create a block that host 4 will miss
+	log.Lvl1("Send block that node 4 will miss")
 	tx1, err := createOneClientTx(s.darc.GetBaseID(), dummyContract, s.value, s.signer)
 	require.NoError(t, err)
-	s.sendTxTo(t, tx1, 0)
+	s.sendTxToAndWait(t, tx1, 0, 10)
 
-	time.Sleep(5 * time.Second)
-
-	// Kill the leader, but the view change won't happen as
-	// 2 nodes are down
+	// Kill the leader, and unpause the sleepy node
 	s.services[0].TestClose()
 	s.hosts[0].Pause()
-
-	s.hosts[3].Unpause()
-	// This will trigger the proof to be propagated. In that test, the catch up
-	// won't be trigger as only one block is missing.
-	s.services[3].sendViewChangeReq(viewchange.View{
-		ID:          s.genesis.Hash,
-		Gen:         s.genesis.SkipChainID(),
-		LeaderIndex: 1,
-	})
+	s.hosts[nodes-1].Unpause()
 
 	// Trigger a viewchange
-	// Create a block that host 4 will miss
+	log.Lvl1("Trigger the viewchange")
 	tx1, err = createOneClientTx(s.darc.GetBaseID(), dummyContract, s.value, s.signer)
 	require.NoError(t, err)
-	s.sendTxTo(t, tx1, 3)
+	s.sendTxTo(t, tx1, nodes-1)
 
-	// It will need a few seconds if it catches the leader index 1 and a bit
-	// more if it goes to the leader index 2 so we give enough time.
-	sb := s.genesis
-	for i := 0; i < 60 && sb.Index != 2; i++ {
-		proof, err := s.services[4].skService().GetDB().GetProof(s.genesis.Hash)
-		require.NoError(t, err)
-		sb = proof[len(proof)-1]
+	log.Lvl1("Wait for the block to propagate")
+	require.NoError(t, NewClient(s.genesis.SkipChainID(),
+		*s.roster).WaitPropagation(1))
 
-		// wait for the view change to happen
-		time.Sleep(1 * time.Second)
-	}
+	// Send the block again
+	log.Lvl1("Sending block again")
+	s.sendTxTo(t, tx1, nodes-1)
+
+	log.Lvl1("Wait for the transaction to be included")
+	require.NoError(t, NewClient(s.genesis.SkipChainID(),
+		*s.roster).WaitPropagation(2))
 
 	// Check that a view change was finally executed
-	leader, err := s.services[4].getLeader(s.genesis.SkipChainID())
+	leader, err := s.services[nodes-1].getLeader(s.genesis.SkipChainID())
 	require.NoError(t, err)
 	require.NotNil(t, leader)
 	require.False(t, leader.Equal(s.services[0].ServerIdentity()))

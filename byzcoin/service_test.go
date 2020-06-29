@@ -908,7 +908,6 @@ func waitInclusion(t *testing.T, client int) {
 	time.Sleep(time.Second)
 }
 
-/*
 // Sends too many transactions to the ledger and waits for all blocks to be
 // done.
 func TestService_FloodLedger(t *testing.T) {
@@ -939,7 +938,6 @@ func TestService_FloodLedger(t *testing.T) {
 		t.Fatalf("didn't get at least 2 blocks: index before %d, index after %v", before.Index, latest.Index)
 	}
 }
-*/
 
 func TestService_BigTx(t *testing.T) {
 	// Use longer block interval for this test, as sending around these big
@@ -1601,60 +1599,6 @@ func TestService_SetConfig(t *testing.T) {
 	require.Equal(t, interval, newInterval)
 	require.Equal(t, blocksize, newBlocksize)
 }
-
-/*
-func TestService_SetConfigInterval(t *testing.T) {
-	defer log.SetShowTime(log.ShowTime())
-	log.SetShowTime(true)
-	s := newSer(t, 1, testInterval)
-	defer s.local.CloseAll()
-
-	// Wait for a block completion to start the interval check
-	// to prevent the first one to be included in the setup block
-	ctx, err := createOneClientTx(s.darc.GetBaseID(), dummyContract, []byte{}, s.signer)
-	require.NoError(t, err)
-	s.sendTxAndWait(t, ctx, 10)
-
-	intervals := []time.Duration{
-		2 * time.Second,
-		5 * time.Second,
-		10 * time.Second,
-		20 * time.Second,
-	}
-	if testing.Short() {
-		intervals = intervals[0:2]
-	}
-
-	counter := 2
-	for _, interval := range intervals {
-		// The next block should now be in the range of testInterval.
-		log.Lvl1("Setting interval to", interval)
-		ctx, _ := createConfigTxWithCounter(t, interval, *s.roster, defaultMaxBlockSize, s, counter)
-		counter++
-		// The wait argument here is also used in case no block is received, so
-		// it means: at most 10*blockInterval, or after 10 blocks, whichever comes
-		// first. Putting it to 1 doesn't work, because the actual blockInterval
-		// is bigger, due to dedis/cothority#1409
-		s.sendTxAndWait(t, ctx, 10)
-
-		// We send an extra transaction first because the new interval is only loaded after a delay
-		// caused by the pipeline feature, i.e., the new interval is only used after an existing wait-interval
-		// is finished and not immediately after receiving the new configuration.
-		dummyCtx, _ := createOneClientTxWithCounter(s.darc.GetBaseID(), dummyContract, []byte{}, s.signer, uint64(counter))
-		counter++
-		s.sendTxAndWait(t, dummyCtx, 10)
-
-		start := time.Now()
-
-		dummyCtx, _ = createOneClientTxWithCounter(s.darc.GetBaseID(), dummyContract, []byte{}, s.signer, uint64(counter))
-		counter++
-		s.sendTxAndWait(t, dummyCtx, 10)
-
-		dur := time.Since(start)
-		require.InDelta(t, dur, interval, float64(1*time.Second))
-	}
-}
-*/
 
 func TestService_SetConfigRosterKeepLeader(t *testing.T) {
 	n := 6
@@ -2772,12 +2716,7 @@ func (s *ser) sendTx(t *testing.T, ctx ClientTransaction) {
 }
 
 func (s *ser) sendTxTo(t *testing.T, ctx ClientTransaction, idx int) {
-	resp, err := s.services[idx].AddTransaction(&AddTxRequest{
-		Version:     CurrentVersion,
-		SkipchainID: s.genesis.SkipChainID(),
-		Transaction: ctx,
-	})
-	transactionOK(t, resp, err)
+	s.sendTxToAndWait(t, ctx, idx, 0)
 }
 
 func (s *ser) sendTxAndWait(t *testing.T, ctx ClientTransaction, wait int) {

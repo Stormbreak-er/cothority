@@ -430,12 +430,14 @@ func (s *Service) AddTransaction(req *AddTxRequest) (*AddTxResponse, error) {
 
 	// Either send the transaction to the leader, or,
 	// if this node is the leader, directly send it to ctxChan.
-	// For every new tx create a new protocol, like in skipchain
 	leader, err := s.getLeader(req.SkipchainID)
 	if err != nil {
 		return nil, xerrors.Errorf("Error getting the leader: %v", err)
 	}
 
+	// Need to create the hash before sending it to ctxChan,
+	// in case it's the leader.
+	// Else it will race when creating the Hash...
 	ctxHash := req.Transaction.Instructions.Hash()
 
 	if s.ServerIdentity().Equal(leader) {
@@ -497,7 +499,6 @@ func (s *Service) AddTransaction(req *AddTxRequest) (*AddTxResponse, error) {
 		tooLong := time.After(tooLongDur)
 
 		blocksLeft := req.InclusionWait
-
 		for {
 			select {
 			case notif := <-ch:

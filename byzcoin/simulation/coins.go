@@ -1,8 +1,6 @@
 package main
 
 import (
-	"encoding/binary"
-	"math/rand"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -20,8 +18,6 @@ func init() {
 	onet.SimulationRegister("TransferCoins", NewSimulationService)
 }
 
-var txNonce uint64
-
 // SimulationService holds the state of the simulation.
 type SimulationService struct {
 	onet.SimulationBFTree
@@ -30,7 +26,6 @@ type SimulationService struct {
 	BatchSize     int
 	Keep          bool
 	Delay         int
-	Accounts      int
 }
 
 // NewSimulationService returns the new simulation, where all fields are
@@ -69,91 +64,6 @@ func (s *SimulationService) Node(config *onet.SimulationConfig) error {
 	return s.SimulationBFTree.Node(config)
 }
 
-//SpawnAccounts creates the specified number of accounts and returns the associated transaction
-func (s *SimulationService) SpawnAccounts(c *byzcoin.Client, gm *byzcoin.CreateGenesisBlock, signer darc.Signer) (byzcoin.ClientTransaction, error) {
-	instr := make([]byzcoin.Instruction, 0)
-	for i := 0; i < s.Accounts; i++ {
-		inst := byzcoin.Instruction{
-			InstanceID: byzcoin.NewInstanceID(gm.GenesisDarc.GetBaseID()),
-			Spawn: &byzcoin.Spawn{
-				ContractID: contracts.ContractCoinID,
-			},
-			SignerIdentities: []darc.Identity{signer.Identity()},
-			SignerCounter:    []uint64{txNonce},
-		}
-		txNonce++
-		instr = append(instr, inst)
-	}
-
-	txAccounts, err := c.CreateTransaction(instr...)
-	if err != nil {
-		return byzcoin.ClientTransaction{}, err
-	}
-
-	// Now sign all the instructions
-	if err = txAccounts.FillSignersAndSignWith(signer); err != nil {
-		return byzcoin.ClientTransaction{}, xerrors.Errorf("signing of instruction failed: %v", err)
-	}
-
-	// Send the instructions.
-	_, err = c.AddTransactionAndWait(txAccounts, 2)
-	if err != nil {
-		return byzcoin.ClientTransaction{}, xerrors.Errorf("couldn't initialize accounts: %v", err)
-	}
-
-	return txAccounts, nil
-
-}
-
-//ViewBalance returns the current balance of the specified account
-func (s *SimulationService) ViewBalance(account1 byzcoin.InstanceID, c *byzcoin.Client) (uint64, error) {
-	proof, err := c.GetProof(account1.Slice())
-	if err != nil {
-		return 0, xerrors.Errorf("couldn't get proof for transaction: %v", err)
-	}
-	_, v0, _, _, err := proof.Proof.KeyValue()
-	if err != nil {
-		return 0, xerrors.Errorf("proof doesn't hold transaction: %v", err)
-	}
-	var account byzcoin.Coin
-	err = protobuf.Decode(v0, &account)
-	if err != nil {
-		return 0, xerrors.Errorf("couldn't decode account: %v", err)
-	}
-	return account.Value, nil
-}
-
-//Credit credits the specified number of coins to the specified account
-func (s *SimulationService) Credit(account byzcoin.InstanceID, c *byzcoin.Client, value uint64, signer darc.Signer) error {
-	quant := make([]byte, 8)
-	binary.LittleEndian.PutUint64(quant, value)
-	inst := byzcoin.Instruction{
-		InstanceID: account,
-		Invoke: &byzcoin.Invoke{
-			ContractID: contracts.ContractCoinID,
-			Command:    "mint",
-			Args: byzcoin.Arguments{{
-				Name:  "coins",
-				Value: quant}},
-		},
-		SignerIdentities: []darc.Identity{signer.Identity()},
-		SignerCounter:    []uint64{txNonce},
-	}
-	tx, err := c.CreateTransaction(inst)
-	if err != nil {
-		return err
-	}
-	if err = tx.FillSignersAndSignWith(signer); err != nil {
-		return xerrors.Errorf("signing of instruction failed: %v", err)
-	}
-	_, err = c.AddTransactionAndWait(tx, 2)
-	if err != nil {
-		return xerrors.Errorf("couldn't mint coin: %v", err)
-	}
-	txNonce++
-	return nil
-}
-
 // Run is used on the destination machines and runs a number of
 // rounds
 func (s *SimulationService) Run(config *onet.SimulationConfig) error {
@@ -183,50 +93,72 @@ func (s *SimulationService) Run(config *onet.SimulationConfig) error {
 		return err
 	}
 
-	balance := make(map[string]uint64)
-
-	// Create number of specified accounts and mint 'Transaction' coins on first account.
-	txNonce = uint64(1)
-
-	txAccounts, err := s.SpawnAccounts(c, gm, signer)
-	if err != nil {
-		return xerrors.Errorf("Cannot spawn accounts: %v", err)
-	}
-
-	account1 := txAccounts.Instructions[0].DeriveID("")
-
-	for k := range txAccounts.Instructions {
-		log.Lvl1("Created account", txAccounts.Instructions[k].DeriveID("").String())
-	}
-
+	// Create two accounts and mint 'Transaction' coins on first account.
 	coins := make([]byte, 8)
-	coins[2] = byte(1)
+	coins[7] = byte(1)
+	tx, err := c.CreateTransaction(byzcoin.Instruction{
+		InstanceID: byzcoin.NewInstanceID(gm.GenesisDarc.GetBaseID()),
+		Spawn: &byzcoin.Spawn{
+			ContractID: contracts.ContractCoinID,
+		},
+		SignerIdentities: []darc.Identity{signer.Identity()},
+		SignerCounter:    []uint64{1},
+	}, byzcoin.Instruction{
+		InstanceID: byzcoin.NewInstanceID(gm.GenesisDarc.GetBaseID()),
+		Spawn: &byzcoin.Spawn{
+			ContractID: contracts.ContractCoinID,
+		},
+		SignerIdentities: []darc.Identity{signer.Identity()},
+		SignerCounter:    []uint64{2},
+	})
+	if err != nil {
+		return err
+	}
+
+	// Now sign all the instructions
+	if err = tx.FillSignersAndSignWith(signer); err != nil {
+		return xerrors.Errorf("signing of instruction failed: %v", err)
+	}
+	coinAddr1 := tx.Instructions[0].DeriveID("")
+	coinAddr2 := tx.Instructions[1].DeriveID("")
+
+	// Send the instructions.
+	_, err = c.AddTransactionAndWait(tx, 2)
+	if err != nil {
+		return xerrors.Errorf("couldn't initialize accounts: %v", err)
+	}
 
 	// Because of issue #1379, we need to do this in a separate tx, once we know
-	// the spawn is done.`
-	err = s.Credit(account1, c, binary.LittleEndian.Uint64(coins), signer)
+	// the spawn is done.
+	tx, err = c.CreateTransaction(byzcoin.Instruction{
+		InstanceID: coinAddr1,
+		Invoke: &byzcoin.Invoke{
+			ContractID: contracts.ContractCoinID,
+			Command:    "mint",
+			Args: byzcoin.Arguments{{
+				Name:  "coins",
+				Value: coins}},
+		},
+		SignerIdentities: []darc.Identity{signer.Identity()},
+		SignerCounter:    []uint64{3},
+	})
 	if err != nil {
-		return xerrors.Errorf("Error crediting: %v", err)
+		return err
 	}
-
-	balance[account1.String()] = binary.LittleEndian.Uint64(coins)
-
-	// Check the balance of account1
-	_, err = s.ViewBalance(account1, c)
+	if err = tx.FillSignersAndSignWith(signer); err != nil {
+		return xerrors.Errorf("signing of instruction failed: %v", err)
+	}
+	_, err = c.AddTransactionAndWait(tx, 2)
 	if err != nil {
-		return xerrors.Errorf("Error checking balance: %v", err)
+		return xerrors.Errorf("couldn't mint coin: %v", err)
 	}
 
 	coinOne := make([]byte, 8)
 	coinOne[0] = byte(1)
 
-	rand.Seed(time.Now().UnixNano())
-	min := 1
-	max := s.Accounts - 1
-
+	var signatureCtr uint64 = 4 // we finished at 3, so start here at 4
 	for round := 0; round < s.Rounds; round++ {
 		log.Lvl1("Starting round", round)
-
 		roundM := monitor.NewTimeMeasure("round")
 
 		if s.Transactions < 3 {
@@ -240,7 +172,6 @@ func (s *SimulationService) Run(config *onet.SimulationConfig) error {
 		tx := byzcoin.ClientTransaction{}
 		// Inverse the prepare/send loop, so that the last transaction is not sent,
 		// but can be sent in the 'confirm' phase using 'AddTransactionAndWait'.
-
 		for t := 0; t < txs; t++ {
 			if len(tx.Instructions) > 0 {
 				log.Lvlf1("Sending transaction %d", t)
@@ -255,10 +186,8 @@ func (s *SimulationService) Run(config *onet.SimulationConfig) error {
 
 			prepare := monitor.NewTimeMeasure("prepare")
 			for i := 0; i < insts; i++ {
-				randomAccountNumber := rand.Intn(max-min+1) + min
-				rAccount := txAccounts.Instructions[randomAccountNumber].DeriveID("")
 				instrs := append(tx.Instructions, byzcoin.Instruction{
-					InstanceID: account1,
+					InstanceID: coinAddr1,
 					Invoke: &byzcoin.Invoke{
 						ContractID: contracts.ContractCoinID,
 						Command:    "transfer",
@@ -269,25 +198,22 @@ func (s *SimulationService) Run(config *onet.SimulationConfig) error {
 							},
 							{
 								Name:  "destination",
-								Value: rAccount.Slice(),
+								Value: coinAddr2.Slice(),
 							}},
 					},
 					SignerIdentities: []darc.Identity{signer.Identity()},
-					SignerCounter:    []uint64{txNonce},
+					SignerCounter:    []uint64{signatureCtr},
 				})
-
-				txNonce++
-				balance[rAccount.String()] = balance[rAccount.String()] + binary.LittleEndian.Uint64(coinOne)
-				balance[account1.String()] = balance[account1.String()] - 1
-
 				tx, err = c.CreateTransaction(instrs...)
 				if err != nil {
 					return err
 				}
+				signatureCtr++
 				err = tx.FillSignersAndSignWith(signer)
 				if err != nil {
 					return xerrors.Errorf("signature error: %v", err)
 				}
+
 			}
 			prepare.Record()
 		}
@@ -306,6 +232,23 @@ func (s *SimulationService) Run(config *onet.SimulationConfig) error {
 		// it doesn't wait until the transaction is included in all nodes. Thus this wait for
 		// the new block to be propagated.
 		time.Sleep(time.Second)
+		proof, err := c.GetProof(coinAddr2.Slice())
+		if err != nil {
+			return xerrors.Errorf("couldn't get proof for transaction: %v", err)
+		}
+		_, v0, _, _, err := proof.Proof.KeyValue()
+		if err != nil {
+			return xerrors.Errorf("proof doesn't hold transaction: %v", err)
+		}
+		var account byzcoin.Coin
+		err = protobuf.Decode(v0, &account)
+		if err != nil {
+			return xerrors.Errorf("couldn't decode account: %v", err)
+		}
+		log.Lvlf1("Account has %d - total should be: %d", account.Value, s.Transactions*(round+1))
+		if account.Value != uint64(s.Transactions*(round+1)) {
+			return xerrors.New("account has wrong amount")
+		}
 		confirm.Record()
 		roundM.Record()
 
@@ -315,23 +258,6 @@ func (s *SimulationService) Run(config *onet.SimulationConfig) error {
 		// skipblock propagation to fail.
 		time.Sleep(blockInterval)
 	}
-
-	log.Lvl1("Check all balances")
-	for k, v := range txAccounts.Instructions {
-		account := txAccounts.Instructions[k].DeriveID("").String()
-		ledgerBalance, err := s.ViewBalance(v.DeriveID(""), c)
-		if err != nil {
-			return xerrors.Errorf("check balance error: %v", err)
-		}
-
-		txs := balance[account]
-		if int(txs) != int(ledgerBalance) {
-			log.Lvl1(ledgerBalance, int(txs), "account has wrong amount")
-			return xerrors.New("account has wrong amount")
-		}
-		log.Lvlf1("Account %s has %d - total should be: %d", account, ledgerBalance, int(txs))
-	}
-
 	// We wait a bit before closing because c.GetProof is sent to the
 	// leader, but at this point some of the children might still be doing
 	// updateCollection. If we stop the simulation immediately, then the
